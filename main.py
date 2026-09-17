@@ -40,19 +40,68 @@ def split_answer_text(answer_text: str) -> list[str]:
     return answers
 
 
+def answer_pdf_clips(answer_file: Path, question_number: int):
+    """Return page regions containing one answer from the answer PDF."""
+    import pymupdf
+
+    with pymupdf.open(answer_file) as pdf:
+        blocks = []
+        for page_number, page in enumerate(pdf):
+            for block in page.get_text("blocks"):
+                blocks.append((page_number, block[1], block[3], block[4].strip()))
+
+        start = next(
+            (
+                block_number,
+                page_number,
+                bottom,
+            )
+            for block_number, (page_number, _, bottom, text) in enumerate(blocks)
+            if re.search(rf"Answer Exercise\s+{question_number}\b", text)
+        )
+        end = (
+            next(
+                (
+                    page_number,
+                    top,
+                )
+                for page_number, top, _, text in blocks[start[0] + 1 :]
+                if re.match(r"(?:Exercise\s+\d+\b|Project preparation\b)", text)
+            )
+            if any(
+                re.match(r"(?:Exercise\s+\d+\b|Project preparation\b)", text)
+                for _, _, _, text in blocks[start[0] + 1 :]
+            )
+            else (len(pdf) - 1, pdf[-1].rect.height)
+        )
+
+        _, start_page, start_bottom = start
+        end_page, end_top = end
+        clips = []
+        for page_number in range(start_page, end_page + 1):
+            page = pdf[page_number]
+            top = start_bottom if page_number == start_page else 0
+            bottom = end_top if page_number == end_page else page.rect.height
+            if bottom > top:
+                clips.append(
+                    (page_number, pymupdf.Rect(0, top, page.rect.width, bottom))
+                )
+        return clips
+
+
 def make_text_from_files(
     answer_file: Path, assignment_directory: Path
-) -> dict[tuple[str, int], tuple[str, str]]:
+) -> dict[tuple[str, int], tuple[Path, str]]:
     """Build one answer/submission pair for every question and PDF."""
     answers = split_answer_text(pdf_to_text(answer_file))
     submissions = [
-        (pdf.parent.name, pdf_to_text(pdf))
+        (pdf.parent.name, pdf)
         for pdf in sorted((assignment_directory / "submissions").glob("s[0-9]*/*.pdf"))
     ]
     text_pairs = {}
     for question_number, answer in enumerate(answers, start=1):
         for submission_name, submission_text in submissions:
-            text_pairs[(submission_name, question_number)] = (answer, submission_text)
+            text_pairs[(submission_name, question_number)] = (submission_text, answer)
     return text_pairs
 
 
@@ -147,16 +196,19 @@ def main() -> None:
     args = parser.parse_args()
     text_pairs = make_text_from_files(args.answer_file, args.assignment_directory)
     screen = window.create_window()
-    for answer_text, submission_text in text_pairs.values():
-        screen.add_text(submission_text, answer_text)
+    for (submission_name, question_number), (submission_pdf, _) in text_pairs.items():
+        screen.add_text(
+            submission_pdf,
+            (args.answer_file, answer_pdf_clips(args.answer_file, question_number)),
+        )
     screen.show()
     answers = (
         screen.get_answers()
     )  # This will return the submitted grade and feedback values
     submitted_answers = merge_answers(text_pairs, answers)
-    submission_texts = {}
-    for (submission_name, _), (_, submission_text) in text_pairs.items():
-        submission_texts.setdefault(submission_name, submission_text)
+    submission_pdfs = {}
+    for (submission_name, _), (submission_pdf, _) in text_pairs.items():
+        submission_pdfs.setdefault(submission_name, submission_pdf)
 
     previous_feedback = {
         submission["submission"]: "\n\n".join(
@@ -167,8 +219,8 @@ def main() -> None:
     }
     general_screen = window.create_window(
         [
-            (submission_texts[submission_name], previous_feedback[submission_name])
-            for submission_name in submission_texts
+            (submission_pdfs[submission_name], previous_feedback[submission_name])
+            for submission_name in submission_pdfs
         ],
         require_grade=False,
     )
@@ -176,7 +228,7 @@ def main() -> None:
     general_answers = general_screen.get_answers()
     general_comments = {
         submission_name: answer["feedback"]
-        for submission_name, answer in zip(submission_texts, general_answers)
+        for submission_name, answer in zip(submission_pdfs, general_answers)
     }
     final_screen = window.create_window(
         [("", "This comment will be added to every submission.")],
