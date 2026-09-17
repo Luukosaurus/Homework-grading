@@ -1,4 +1,6 @@
+import json
 import tkinter as tk
+from tkinter import filedialog, messagebox
 
 
 class PdfViewer(tk.Canvas):
@@ -83,17 +85,33 @@ class PdfViewer(tk.Canvas):
 class HomeworkGradingWindow(tk.Tk):
     """Window for displaying texts and collecting grade/feedback answers."""
 
-    def __init__(self, text_sets=None, require_grade=True, assignment_label=None):
+    def __init__(
+        self,
+        text_sets=None,
+        require_grade=True,
+        assignment_label=None,
+        progress_path=None,
+        progress_stage="questions",
+        initial_submissions=None,
+        initial_draft=None,
+        progress_context=None,
+    ):
         super().__init__()
         self.title("Homework Grading")
+        self.protocol("WM_DELETE_WINDOW", self.close_window)
         self.geometry("1100x600")
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=2)
         self.rowconfigure(1, weight=1)
 
         self.text_sets = list(text_sets or [])
-        self.submissions = []
+        self.submissions = list(initial_submissions or [])
         self.require_grade = require_grade
+        self.progress_path = progress_path
+        self.progress_stage = progress_stage
+        self.initial_draft = initial_draft or {}
+        self.progress_context = progress_context or {}
+        self.closed = False
         self.current_text = False
         self.current_assignment_text = None
 
@@ -139,9 +157,7 @@ class HomeworkGradingWindow(tk.Tk):
         self.assignment_pdf = PdfViewer(
             assignment_frame, background="white", highlightthickness=0
         )
-        self.assignment_pdf.grid(
-            row=1, column=0, sticky="nsew", padx=(8, 0), pady=8
-        )
+        self.assignment_pdf.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
         self.assignment_pdf.grid_remove()
         assignment_pdf_scrollbar = tk.Scrollbar(
             assignment_frame, orient="vertical", command=self.assignment_pdf.yview
@@ -151,7 +167,9 @@ class HomeworkGradingWindow(tk.Tk):
         assignment_pdf_horizontal_scrollbar = tk.Scrollbar(
             assignment_frame, orient="horizontal", command=self.assignment_pdf.xview
         )
-        assignment_pdf_horizontal_scrollbar.grid(row=2, column=0, sticky="ew", padx=(8, 0))
+        assignment_pdf_horizontal_scrollbar.grid(
+            row=2, column=0, sticky="ew", padx=(8, 0)
+        )
         assignment_pdf_horizontal_scrollbar.grid_remove()
         self.assignment_pdf.config(
             yscrollcommand=assignment_pdf_scrollbar.set,
@@ -185,15 +203,21 @@ class HomeworkGradingWindow(tk.Tk):
         self.feedback_text = tk.Text(input_frame, height=10, wrap="word")
         self.feedback_text.grid(row=3, column=0, sticky="nsew")
 
-        self.submit_button = tk.Button(input_frame, text="Submit", command=self.submit)
-        self.submit_button.grid(row=4, column=0, sticky="w", pady=(12, 0))
-        self.bind("<Control-s>", self.submit)
+        action_frame = tk.Frame(input_frame)
+        action_frame.grid(row=4, column=0, sticky="w", pady=(12, 0))
+        self.submit_button = tk.Button(action_frame, text="Submit", command=self.submit)
+        self.submit_button.grid(row=0, column=0, padx=(0, 8))
+        tk.Button(action_frame, text="Save", command=self.save_progress).grid(
+            row=0, column=1
+        )
+        self.bind("<Control-s>", self.save_progress)
+        self.bind("<Control-Return>", self.submit)
 
         if not self.require_grade:
             grade_frame.grid_remove()
             feedback_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
             self.feedback_text.grid(row=1, column=0, sticky="nsew")
-            self.submit_button.grid(row=2, column=0, sticky="w", pady=(12, 0))
+            action_frame.grid(row=2, column=0, sticky="w", pady=(12, 0))
             input_frame.rowconfigure(1, weight=1)
 
         student_frame = tk.LabelFrame(self, text="Student answer")
@@ -231,6 +255,7 @@ class HomeworkGradingWindow(tk.Tk):
         self.student_answer.config(xscrollcommand=horizontal_scrollbar.set)
 
         self.add_texts_from_queue()
+        self._restore_draft()
 
     def add_text(self, student_answer, assignment_text):
         """Display another student answer and assignment text."""
@@ -300,6 +325,19 @@ class HomeworkGradingWindow(tk.Tk):
         widget.insert("1.0", value)
         widget.config(state="disabled")
 
+    def _restore_draft(self):
+        if self.require_grade:
+            grade = self.initial_draft.get("grade", "")
+            if "/" in grade:
+                current_grade, maximum_grade = grade.split("/", 1)
+                self.grade_entry.insert(0, current_grade)
+                self.maximum_grade_entry.insert(0, maximum_grade)
+        self.feedback_text.insert("1.0", self.initial_draft.get("feedback", ""))
+
+    def close_window(self):
+        self.closed = True
+        self.destroy()
+
     def submit(self, event=None):
         if self.require_grade:
             try:
@@ -325,6 +363,38 @@ class HomeworkGradingWindow(tk.Tk):
             self.destroy()
         return "break"
 
+    def save_progress(self, event=None):
+        """Save submitted answers and the current draft to a JSON file."""
+        save_path = self.progress_path or filedialog.asksaveasfilename(
+            title="Save grading progress",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*")],
+        )
+        if not save_path:
+            return "break"
+
+        progress = {
+            "stage": self.progress_stage,
+            "submissions": self.submissions,
+            "context": self.progress_context,
+            "current_draft": {
+                "grade": (
+                    f"{self.grade_entry.get().strip()}/{self.maximum_grade_entry.get().strip()}"
+                    if self.require_grade
+                    else ""
+                ),
+                "feedback": self.feedback_text.get("1.0", "end-1c"),
+            },
+        }
+        try:
+            with open(save_path, "w", encoding="utf-8") as progress_file:
+                json.dump(progress, progress_file, indent=2)
+        except OSError as error:
+            messagebox.showerror("Save failed", f"Could not save progress:\n{error}")
+        else:
+            messagebox.showinfo("Progress saved", f"Progress saved to:\n{save_path}")
+        return "break"
+
     def get_answers(self):
         """Return a copy of all submitted grade and feedback values."""
         return list(self.submissions)
@@ -334,9 +404,27 @@ class HomeworkGradingWindow(tk.Tk):
         self.mainloop()
 
 
-def create_window(text_sets=None, require_grade=True, assignment_label=None):
+def create_window(
+    text_sets=None,
+    require_grade=True,
+    assignment_label=None,
+    progress_path=None,
+    progress_stage="questions",
+    initial_submissions=None,
+    initial_draft=None,
+    progress_context=None,
+):
     """Create a HomeworkGradingWindow for compatibility with existing code."""
-    return HomeworkGradingWindow(text_sets, require_grade, assignment_label)
+    return HomeworkGradingWindow(
+        text_sets,
+        require_grade,
+        assignment_label,
+        progress_path,
+        progress_stage,
+        initial_submissions,
+        initial_draft,
+        progress_context,
+    )
 
 
 if __name__ == "__main__":

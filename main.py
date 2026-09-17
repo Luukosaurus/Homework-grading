@@ -1,6 +1,7 @@
 """Extract text from a PDF file."""
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -185,6 +186,18 @@ def write_feedback_files(
         feedback_path.write_text(updated_text)
 
 
+def load_progress(progress_path: Path) -> dict:
+    """Load a saved grading checkpoint, if one exists."""
+    if not progress_path.exists():
+        return {}
+    try:
+        return json.loads(progress_path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract text from a PDF file.")
     parser.add_argument("answer_file", type=Path, help="PDF containing the answers")
@@ -195,16 +208,35 @@ def main() -> None:
     )
     args = parser.parse_args()
     text_pairs = make_text_from_files(args.answer_file, args.assignment_directory)
-    screen = window.create_window()
-    for (submission_name, question_number), (submission_pdf, _) in text_pairs.items():
-        screen.add_text(
-            submission_pdf,
-            (args.answer_file, answer_pdf_clips(args.answer_file, question_number)),
+    progress_path = args.assignment_directory / ".grading-progress.json"
+    progress = load_progress(progress_path)
+    stage = progress.get("stage", "questions")
+    context = progress.get("context", {})
+
+    if stage == "questions":
+        answers = progress.get("submissions", [])
+        answer_pairs = list(text_pairs.items())[len(answers) :]
+        question_text_sets = [
+            (
+                submission_pdf,
+                (args.answer_file, answer_pdf_clips(args.answer_file, question_number)),
+            )
+            for (_, question_number), (submission_pdf, _) in answer_pairs
+        ]
+        screen = window.create_window(
+            question_text_sets,
+            progress_path=progress_path,
+            progress_stage="questions",
+            initial_submissions=answers,
+            initial_draft=progress.get("current_draft"),
         )
-    screen.show()
-    answers = (
-        screen.get_answers()
-    )  # This will return the submitted grade and feedback values
+        screen.show()
+        if screen.closed:
+            return
+        answers = screen.get_answers()
+    else:
+        answers = context.get("question_answers", [])
+
     submitted_answers = merge_answers(text_pairs, answers)
     submission_pdfs = {}
     for (submission_name, _), (submission_pdf, _) in text_pairs.items():
@@ -217,25 +249,69 @@ def main() -> None:
         )
         for submission in submitted_answers
     }
-    general_screen = window.create_window(
-        [
-            (submission_pdfs[submission_name], previous_feedback[submission_name])
-            for submission_name in submission_pdfs
-        ],
-        require_grade=False,
-    )
-    general_screen.show()
-    general_answers = general_screen.get_answers()
-    general_comments = {
-        submission_name: answer["feedback"]
-        for submission_name, answer in zip(submission_pdfs, general_answers)
-    }
+    submission_names = list(submission_pdfs)
+    if stage == "general":
+        general_answers = progress.get("submissions", [])
+        general_start = len(general_answers)
+        general_screen = window.create_window(
+            [
+                (submission_pdfs[submission_name], previous_feedback[submission_name])
+                for submission_name in submission_names[general_start:]
+            ],
+            require_grade=False,
+            progress_path=progress_path,
+            progress_stage="general",
+            initial_submissions=general_answers,
+            initial_draft=progress.get("current_draft"),
+            progress_context={"question_answers": answers},
+        )
+        general_screen.show()
+        if general_screen.closed:
+            return
+        general_answers = general_screen.get_answers()
+        general_comments = {
+            submission_name: answer["feedback"]
+            for submission_name, answer in zip(submission_names, general_answers)
+        }
+    elif stage == "final":
+        general_comments = context.get("general_comments", {})
+    else:
+        general_screen = window.create_window(
+            [
+                (submission_pdfs[submission_name], previous_feedback[submission_name])
+                for submission_name in submission_names
+            ],
+            require_grade=False,
+            progress_path=progress_path,
+            progress_stage="general",
+            progress_context={"question_answers": answers},
+        )
+        general_screen.show()
+        if general_screen.closed:
+            return
+        general_answers = general_screen.get_answers()
+        general_comments = {
+            submission_name: answer["feedback"]
+            for submission_name, answer in zip(submission_names, general_answers)
+        }
+
+    final_progress = progress if stage == "final" else {}
     final_screen = window.create_window(
         [("", "This comment will be added to every submission.")],
         require_grade=False,
         assignment_label="Final comment",
+        progress_path=progress_path,
+        progress_stage="final",
+        initial_submissions=final_progress.get("submissions", []),
+        initial_draft=final_progress.get("current_draft"),
+        progress_context={
+            "question_answers": answers,
+            "general_comments": general_comments,
+        },
     )
     final_screen.show()
+    if final_screen.closed:
+        return
     final_answers = final_screen.get_answers()
     final_comment = final_answers[0]["feedback"] if final_answers else ""
 
@@ -245,6 +321,7 @@ def main() -> None:
         general_comments,
         final_comment,
     )
+    progress_path.unlink(missing_ok=True)
     print("Submitted answers:", submitted_answers)
 
 
