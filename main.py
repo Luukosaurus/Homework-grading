@@ -28,7 +28,28 @@ def split_answer_text(answer_text: str) -> list[str]:
     """Return the answer for each exercise in a correct-answer document."""
     answer_markers = list(re.finditer(r"Answer Exercise\s+(\d+)", answer_text))
     if not answer_markers:
-        answer_markers = list(re.finditer(r"(?m)^Solution(?:\s|$)", answer_text))
+        exercise_sections = list(re.finditer(r"(?m)^Exercise\s+\d+\b", answer_text))
+        answer_starts = []
+        for exercise_section in exercise_sections:
+            solution = re.search(
+                r"(?m)^Solution(?:\s|$)",
+                answer_text[exercise_section.end() :],
+            )
+            if solution:
+                answer_starts.append(exercise_section.end() + solution.end())
+        answers = []
+        for answer_start in answer_starts:
+            next_section = re.search(
+                r"(?m)^Exercise\s+\d+\b|^Project preparation\b",
+                answer_text[answer_start:],
+            )
+            answer_end = (
+                answer_start + next_section.start()
+                if next_section
+                else len(answer_text)
+            )
+            answers.append(answer_text[answer_start:answer_end].strip())
+        return answers
     answers = []
     for marker in answer_markers:
         answer_start = marker.end()
@@ -53,27 +74,27 @@ def answer_pdf_clips(answer_file: Path, question_number: int):
             for block in page.get_text("blocks"):
                 blocks.append((page_number, block[1], block[3], block[4].strip()))
 
-        start = next(
-            (
-                block_number,
-                page_number,
-                bottom,
+        answer_marker = re.compile(rf"Answer Exercise\s+{question_number}\b")
+        if any(answer_marker.search(text) for _, _, _, text in blocks):
+            start = next(
+                (block_number, page_number, bottom)
+                for block_number, (page_number, _, bottom, text) in enumerate(blocks)
+                if answer_marker.search(text)
             )
-            for block_number, (page_number, _, bottom, text) in enumerate(blocks)
-            if re.search(rf"Answer Exercise\s+{question_number}\b", text)
-            or (
-                not any(
-                    re.search(r"Answer Exercise\s+\d+\b", block_text)
-                    for _, _, _, block_text in blocks
+        else:
+            exercise_starts = [
+                block_number
+                for block_number, (_, _, _, text) in enumerate(blocks)
+                if re.match(rf"Exercise\s+{question_number}\b", text)
+            ]
+            exercise_start = exercise_starts[0]
+            start = next(
+                (block_number, page_number, bottom)
+                for block_number, (page_number, _, bottom, text) in enumerate(
+                    blocks[exercise_start + 1 :], start=exercise_start + 1
                 )
-                and re.match(r"Solution(?:\s|$)", text)
-                and sum(
-                    bool(re.match(r"Solution(?:\s|$)", block_text))
-                    for _, _, _, block_text in blocks[: block_number + 1]
-                )
-                == question_number
+                if re.match(r"Solution(?:\s|$)", text)
             )
-        )
         end = (
             next(
                 (
