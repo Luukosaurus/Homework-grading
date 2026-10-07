@@ -27,6 +27,8 @@ def pdf_to_text(pdf_path: Path) -> str:
 def split_answer_text(answer_text: str) -> list[str]:
     """Return the answer for each exercise in a correct-answer document."""
     answer_markers = list(re.finditer(r"Answer Exercise\s+(\d+)", answer_text))
+    if not answer_markers:
+        answer_markers = list(re.finditer(r"(?m)^Solution(?:\s|$)", answer_text))
     answers = []
     for marker in answer_markers:
         answer_start = marker.end()
@@ -59,6 +61,18 @@ def answer_pdf_clips(answer_file: Path, question_number: int):
             )
             for block_number, (page_number, _, bottom, text) in enumerate(blocks)
             if re.search(rf"Answer Exercise\s+{question_number}\b", text)
+            or (
+                not any(
+                    re.search(r"Answer Exercise\s+\d+\b", block_text)
+                    for _, _, _, block_text in blocks
+                )
+                and re.match(r"Solution(?:\s|$)", text)
+                and sum(
+                    bool(re.match(r"Solution(?:\s|$)", block_text))
+                    for _, _, _, block_text in blocks[: block_number + 1]
+                )
+                == question_number
+            )
         )
         end = (
             next(
