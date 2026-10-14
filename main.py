@@ -26,13 +26,17 @@ def pdf_to_text(pdf_path: Path) -> str:
 
 def split_answer_text(answer_text: str) -> list[str]:
     """Return the answer for each exercise in a correct-answer document."""
-    answer_markers = list(re.finditer(r"Answer Exercise\s+(\d+)", answer_text))
+    answer_markers = list(
+        re.finditer(r"(?im)^Answer Exercise\s+(\d+)\b", answer_text)
+    )
     if not answer_markers:
-        exercise_sections = list(re.finditer(r"(?m)^Exercise\s+\d+\b", answer_text))
+        exercise_sections = list(
+            re.finditer(r"(?im)^Exercise\s+\d+\b", answer_text)
+        )
         answer_starts = []
         for exercise_section in exercise_sections:
             solution = re.search(
-                r"(?m)^Solution(?:\s|$)",
+                r"(?im)^(?:Solution|Answer)(?:\s|$)",
                 answer_text[exercise_section.end() :],
             )
             if solution:
@@ -40,7 +44,7 @@ def split_answer_text(answer_text: str) -> list[str]:
         answers = []
         for answer_start in answer_starts:
             next_section = re.search(
-                r"(?m)^Exercise\s+\d+\b|^Project preparation\b",
+                r"(?im)^Exercise\s+\d+\b|^Project preparation\b",
                 answer_text[answer_start:],
             )
             answer_end = (
@@ -54,7 +58,7 @@ def split_answer_text(answer_text: str) -> list[str]:
     for marker in answer_markers:
         answer_start = marker.end()
         next_section = re.search(
-            r"(?m)^Exercise\s+\d+\b|^Project preparation\b",
+            r"(?im)^Exercise\s+\d+\b|^Project preparation\b",
             answer_text[answer_start:],
         )
         answer_end = (
@@ -74,7 +78,9 @@ def answer_pdf_clips(answer_file: Path, question_number: int):
             for block in page.get_text("blocks"):
                 blocks.append((page_number, block[1], block[3], block[4].strip()))
 
-        answer_marker = re.compile(rf"Answer Exercise\s+{question_number}\b")
+        answer_marker = re.compile(
+            rf"(?im)^Answer Exercise\s+{question_number}\b"
+        )
         if any(answer_marker.search(text) for _, _, _, text in blocks):
             start = next(
                 (block_number, page_number, bottom)
@@ -85,7 +91,7 @@ def answer_pdf_clips(answer_file: Path, question_number: int):
             exercise_starts = [
                 block_number
                 for block_number, (_, _, _, text) in enumerate(blocks)
-                if re.match(rf"Exercise\s+{question_number}\b", text)
+                if re.match(rf"(?i)Exercise\s+{question_number}\b", text)
             ]
             exercise_start = exercise_starts[0]
             start = next(
@@ -93,7 +99,7 @@ def answer_pdf_clips(answer_file: Path, question_number: int):
                 for block_number, (page_number, _, bottom, text) in enumerate(
                     blocks[exercise_start + 1 :], start=exercise_start + 1
                 )
-                if re.match(r"Solution(?:\s|$)", text)
+                if re.match(r"(?i)(?:Solution|Answer)(?:\s|$)", text)
             )
         end = (
             next(
@@ -102,10 +108,14 @@ def answer_pdf_clips(answer_file: Path, question_number: int):
                     top,
                 )
                 for page_number, top, _, text in blocks[start[0] + 1 :]
-                if re.match(r"(?:Exercise\s+\d+\b|Project preparation\b)", text)
+                if re.match(
+                    r"(?i)(?:Exercise\s+\d+\b|Project preparation\b)", text
+                )
             )
             if any(
-                re.match(r"(?:Exercise\s+\d+\b|Project preparation\b)", text)
+                re.match(
+                    r"(?i)(?:Exercise\s+\d+\b|Project preparation\b)", text
+                )
                 for _, _, _, text in blocks[start[0] + 1 :]
             )
             else (len(pdf) - 1, pdf[-1].rect.height)
